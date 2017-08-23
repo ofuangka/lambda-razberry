@@ -143,15 +143,21 @@ function handleControl(event, context) {
             });
         
         put(`/devices/${applianceId}?access_token=${accessToken}`, postData, getOptions(postData))
-            .then(() => {
-                var name = event.header.name === 'TurnOnRequest' ? 'TurnOnConfirmation' : 'TurnOffConfirmation',
-                    response = getResponse(name, 'Alexa.ConnectedHome.Control');
-                console.log(`Confirmation: ${JSON.stringify(response)}`);
-                context.succeed(response);
+            .then(response => {
+                if (response.statusCode === 200) {
+                    var name = event.header.name === 'TurnOnRequest' ? 'TurnOnConfirmation' : 'TurnOffConfirmation',
+                        confirmation = getResponse(name, 'Alexa.ConnectedHome.Control');
+                    console.log(`Confirmation: ${JSON.stringify(confirmation)}`);
+                    context.succeed(confirmation);
+                } else {
+                    throw new Error(`Unexpected HTTP statusCode ${response.statusCode}`);
+                }
             })
             .catch(error => {
                 console.log(`Error: ${JSON.stringify(error)}`);
-                context.fail(getResponse('DependentServiceUnavailableError', 'Alexa.ConntextHome.Control'));
+                context.fail(getResponse('DependentServiceUnavailableError', 'Alexa.ContextHome.Control', {
+                    dependentServiceName: 'z-way-relay'
+                }));
             });
     }
 }
@@ -184,7 +190,7 @@ exports.handler = (event, context) => {
          */
         default:
             console.log(`Unsupported namespace: ${event.header.namespace}`);
-            context.fail('Something went wrong');
+            context.fail(getResponse('UnsupportedOperationError', 'Alexa.ConnectedHome.Control'));
             break;
     }
 };
