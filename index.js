@@ -115,11 +115,11 @@ function handleDiscovery(event, context) {
         )
         .then(validAppliances => {
             var response = getDiscoveryResponse(validAppliances);
-            console.log(`Discovery: ${response}`);
+            console.log(`Discovery: ${JSON.stringify(response)}`);
             context.succeed(response);
         })
         .catch(error => {
-            console.log(`Discovery error: ${error}`);
+            console.log(`Discovery error: ${JSON.stringify(error)}`);
 
             /* we're never supposed to return an error for a discovery response */
             context.succeed(getDiscoveryResponse([]));
@@ -160,18 +160,18 @@ function handleControl(event, context) {
                     },
                     payload: {}
                 };
-                console.log(`Confirmation: ${response}`);
+                console.log(`Confirmation: ${JSON.stringify(response)}`);
                 context.succeed(response);
             })
             .catch(error => {
-                console.log(`Error: ${error}`);
+                console.log(`Error: ${JSON.stringify(error)}`);
                 context.fail(generateError('DependentServiceUnavailableError', 'Alexa.ConntextHome.Control'));
             });
     }
 }
 
 exports.handler = (event, context) => {
-    console.log(`Event received: ${event}`);
+    console.log(`Event received: ${JSON.stringify(event)}`);
     switch (event.header.namespace) {
 
         /**
