@@ -47,18 +47,19 @@ function get(path, options) {
 function put(path, postData, options) {
     return httpPromise(assign({ method: 'PUT', path: path }, options), postData);
 }
-function getDiscoveryResponse(discoveredAppliances) {
+function getResponse(name, namespace, payload) {
     return {
         header: {
             messageId: `${Date.now()}`,
-            name: 'DiscoverAppliancesResponse',
-            namespace: 'Alexa.ConnectedHome.Discovery',
+            name: name,
+            namespace: namespace,
             payloadVersion: '2'
         },
-        payload: {
-            discoveredAppliances: discoveredAppliances
-        }
+        payload: payload === undefined ? {} : payload
     };
+}
+function getDiscoveryResponse(discoveredAppliances) {
+    return getResponse('DiscoverAppliancesResponse', 'Alexa.ConnectedHome.Discovery', discoveredAppliances);
 }
 function getOptions(postData) {
     return {
@@ -69,17 +70,6 @@ function getOptions(postData) {
             'Content-Type': 'application/json',
             'Content-Length': typeof postData === 'string' ? Buffer.byteLength(postData) : 0
         }
-    };
-}
-function generateError(name, namespace) {
-    return {
-        header: {
-            messageId: `${Date.now()}`,
-            namespace: namespace,
-            name: name,
-            payloadVersion: '2'
-        },
-        payload: {}
     };
 }
 /**
@@ -93,7 +83,10 @@ function handleDiscovery(event, context) {
 
     /* make the remote server request */
     get(`/devices?access_token=${accessToken}`, getOptions())
-        .then(response => JSON.parse(response.responseText))
+        .then(response => {
+            console.log(`rawResponse: ${response.responseText}`);
+            return JSON.parse(response.responseText);
+        })
         .then(appliances => appliances
             .filter(appliance => appliance.id
                 && appliance.metrics
@@ -137,7 +130,7 @@ function handleControl(event, context) {
      * turn on / turn off, hence we are filtering on anything that is not SwitchOnOffRequest.
      */
     if (!event.header.name.match(/^TurnO(n|ff)Request$/)) {
-        context.fail(generateError('UnsupportedOperationError', 'Alexa.ConnectedHome.Control'));
+        context.fail(getResponse('UnsupportedOperationError', 'Alexa.ConnectedHome.Control'));
     } else {
 
         /**
@@ -151,21 +144,14 @@ function handleControl(event, context) {
         
         put(`/devices/${applianceId}?access_token=${accessToken}`, postData, getOptions(postData))
             .then(() => {
-                var response = {
-                    header: {
-                        messageId: `${Date.now()}`,
-                        namespace: 'Alexa.ConnectedHome.Control',
-                        name: event.header.name === 'TurnOnRequest' ? 'TurnOnConfirmation' : 'TurnOffConfirmation',
-                        payloadVersion: '2'
-                    },
-                    payload: {}
-                };
+                var name = event.header.name === 'TurnOnRequest' ? 'TurnOnConfirmation' : 'TurnOffConfirmation',
+                    response = getResponse(name, 'Alexa.ConnectedHome.Control');
                 console.log(`Confirmation: ${JSON.stringify(response)}`);
                 context.succeed(response);
             })
             .catch(error => {
                 console.log(`Error: ${JSON.stringify(error)}`);
-                context.fail(generateError('DependentServiceUnavailableError', 'Alexa.ConntextHome.Control'));
+                context.fail(getResponse('DependentServiceUnavailableError', 'Alexa.ConntextHome.Control'));
             });
     }
 }
