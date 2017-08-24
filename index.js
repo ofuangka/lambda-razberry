@@ -1,20 +1,48 @@
 var http = require('http'),
-    REMOTE_HOST = process.env.REMOTE_HOST,
-    REMOTE_PORT = process.env.REMOTE_PORT;
+    remoteHost = process.env.REMOTE_HOST,
+    remotePort = process.env.REMOTE_PORT;
+
+const ERROR_TYPES = {
+    ENDPOINT_UNREACHABLE: 'ENDPOINT_UNREACHABLE',
+    NO_SUCH_ENDPOINT: 'NO_SUCH_ENDPOINT',
+    INVALID_VALUE: 'INVALID_VALUE',
+    VALUE_OUT_OF_RANGE: 'VALUE_OUT_OF_RANGE',
+    TEMPERATURE_VALUE_OUT_OF_RANGE: 'TEMPERATURE_VALUE_OUT_OF_RANGE',
+    INVALID_DIRECTIVE: 'INVALID_DIRECTIVE',
+    FIRMWARE_OUT_OF_RANGE: 'FIRMWARE_OUT_OF_RANGE',
+    HARDWARE_MALFUNCTION: 'HARDWARE_MALFUNCTION',
+    RATE_LIMIT_EXCEEDED: 'RATE_LIMIT_EXCEEDED',
+    INVALID_AUTHORIZATION_CREDENTIAL: 'INVALID_AUTHORIZATION_CREDENTIAL',
+    EXPIRED_AUTHORIZATION_CREDENTIAL: 'EXPIRED_AUTHORIZATION_CREDENTIAL',
+    INTERNAL_ERROR: 'INTERNAL_ERROR'
+},
+    SUPPORTED_DEVICES = {
+        switchBinary: 'switchBinary',
+        roku: 'roku',
+        television: 'television'
+    },
+    SUPPORTED_INTERFACES = {
+        Alexa_Discovery: 'Alexa.Discovery',
+        Alexa_PowerController: 'Alexa.PowerController',
+        Alexa_ChannelController: 'Alexa.ChannelController',
+        Alexa_PlaybackController: 'Alexa.PlaybackController',
+        Alexa_InputController: 'Alexa.InputController',
+        Alexa_StepSpeaker: 'Alexa.StepSpeaker'
+    };
 
 /**
  * cheap polyfill for Object.assign()
  */
 function assign(target) {
-	for (var i = 1; i < arguments.length; i++) {
-		var source = arguments[i];
-		for (var nextKey in source) {
-			if (source.hasOwnProperty(nextKey)) {
-				target[nextKey] = source[nextKey];
-			}
-		}
-	}
-	return target;
+    for (var i = 1; i < arguments.length; i++) {
+        var source = arguments[i];
+        for (var nextKey in source) {
+            if (source.hasOwnProperty(nextKey)) {
+                target[nextKey] = source[nextKey];
+            }
+        }
+    }
+    return target;
 }
 
 /**
@@ -42,29 +70,15 @@ function httpPromise(options, postData) {
 }
 
 function get(path, options) {
-    return httpPromise(assign({ method: 'GET', path: path }, options));
+    return httpPromise(assign({ method: 'GET', path: path }, getOptions()));
 }
 function put(path, postData, options) {
-    return httpPromise(assign({ method: 'PUT', path: path }, options), postData);
-}
-function getResponse(name, namespace, payload) {
-    return {
-        header: {
-            messageId: `${Date.now()}`,
-            name: name,
-            namespace: namespace,
-            payloadVersion: '2'
-        },
-        payload: payload === undefined ? {} : payload
-    };
-}
-function getDiscoveryResponse(discoveredAppliances) {
-    return getResponse('DiscoverAppliancesResponse', 'Alexa.ConnectedHome.Discovery', discoveredAppliances);
+    return httpPromise(assign({ method: 'PUT', path: path }, getOptions(postData)), postData);
 }
 function getOptions(postData) {
     return {
-        hostname: REMOTE_HOST,
-        port: REMOTE_PORT,
+        hostname: remoteHost,
+        port: remotePort,
         headers: {
             accept: '*/*',
             'Content-Type': 'application/json',
@@ -72,44 +86,109 @@ function getOptions(postData) {
         }
     };
 }
+
+function isEventValid(event) {
+    return event
+        && event.directive
+        && event.directive.header
+        && event.directive.header.namespace
+        && event.directive.header.name;
+}
+function getResponse(namespace, name, payload) {
+    return {
+        event: {
+            header: {
+                messageId: `${Date.now()}`,
+                name: name,
+                namespace: namespace,
+                payloadVersion: '3'
+            },
+            payload: payload === undefined ? {} : payload
+        }
+    };
+}
+function getErrorResponse(type, message) {
+    return getResponse('Alexa', 'ErrorResponse', {
+        type: type,
+        message: message
+    });
+}
+function isDeviceSupported(device) {
+    return device
+        && device.id
+        && device.metrics
+        && device.metrics.title
+        && SUPPORTED_DEVICES.hasOwnProperty(device.deviceType);
+}
+function getCapability(iface) {
+    return {
+        'interface': iface,
+        type: 'AlexaInterface',
+        version: '1.0'
+    };
+}
+function getDeviceCapabilities(device) {
+    var deviceType = device.deviceType,
+        ret = [];
+    if (deviceType === SUPPORTED_DEVICES.switchBinary
+        || deviceType === SUPPORTED_DEVICES.television) {
+        ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_PowerController));
+    }
+    if (deviceType === SUPPORTED_DEVICES.television
+        || deviceType === SUPPORTED_DEVICES.roku) {
+        ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_ChannelController));
+        ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_PlaybackController));
+    }
+    if (deviceType === SUPPORTED_DEVICES.television) {
+        ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_StepSpeaker));
+    }
+    return ret;
+}
+function getDiscoveryResponse(endpoints) {
+    return getResponse(SUPPORTED_INTERFACES.Alexa_Discovery, 'Discover.Response', { endpoints: endpoints });
+}
+function getPowerControlResponse(newState) {
+    return assign({
+        context: {
+            properties: [{
+                namespace: SUPPORTED_INTERFACES.Alexa_PowerController,
+                name: 'powerState',
+                value: newState,
+                timeOfSample: `${new Date()}`,
+                uncertaintyInMilliseconds: 0
+            }]
+        }
+    }, getResponse('Alexa', 'Response'))
+}
 /**
- * This method is invoked when we receive a "Discovery" message from Alexa Smart Home Skill.
+ * This function is invoked when we receive a "Discovery" message from Alexa Smart Home Skill.
  * We are expected to respond back with a list of appliances that we have discovered for a given
  * customer. 
  */
-function handleDiscovery(event, context) {
+function handleDiscoveryEvent(event, context) {
 
-    var accessToken = event.payload.accessToken.trim();
+    var accessToken = event.directive.payload.scope.token.trim();
 
     /* make the remote server request */
-    get(`/devices?access_token=${accessToken}`, getOptions())
-        .then(response => {
-            console.log(`rawResponse: ${response.responseText}`);
-            return JSON.parse(response.responseText);
-        })
-        .then(appliances => appliances
-            .filter(appliance => appliance.id
-                && appliance.metrics
-                && appliance.metrics.title
-                && appliance.metrics.level
-                && /^(on|off)$/.test(appliance.metrics.level))
-            .map(appliance => {
+    get(`/devices?access_token=${accessToken}`)
+        .then(response => JSON.parse(response.responseText))
+        .then(devices => devices
+            .filter(isDeviceSupported)
+            .map(device => {
                 return {
-                    applianceId: appliance.id,
+                    endpointId: device.id,
                     manufacturerName: 'Unknown',
-                    modelName: 'Unknown',
-                    version: 'Unknown',
-                    friendlyName: appliance.metrics.title,
-                    friendlyDescription: appliance.metrics.title,
-                    isReachable: true,
-                    actions: ['turnOn', 'turnOff']
+                    friendlyName: device.metrics.title,
+                    description: device.metrics.title,
+                    displayCategories: [],
+                    capabilities: getDeviceCapabilities(device)
                 };
             })
         )
-        .then(validAppliances => {
-            var response = getDiscoveryResponse(validAppliances);
-            console.log(`Discovery: ${JSON.stringify(response)}`);
-            context.succeed(response);
+        .then(endpoints => {
+            var discoveryResponse = getDiscoveryResponse(endpoints);
+            console.log(`Discovery success: ${JSON.stringify(discoveryResponse)}`);
+            context.succeed(discoveryResponse);
         })
         .catch(error => {
             console.log(`Discovery error: ${JSON.stringify(error)}`);
@@ -118,79 +197,75 @@ function handleDiscovery(event, context) {
             context.succeed(getDiscoveryResponse([]));
         });
 }
-
 /**
- * Control events are processed here.
+ * PowerControl events are processed here.
  * This is called when Alexa requests an action (IE turn off appliance).
  */
-function handleControl(event, context) {
+function handlePowerControlEvent(event, context) {
+    var directiveName = event.directive.header.name;
 
-    /**
-     * Fail the invocation if the header is unexpected. This example only demonstrates
-     * turn on / turn off, hence we are filtering on anything that is not SwitchOnOffRequest.
-     */
-    if (!event.header.name.match(/^TurnO(n|ff)Request$/)) {
-        context.fail(getResponse('UnsupportedOperationError', 'Alexa.ConnectedHome.Control'));
+    if (!/^TurnO(n|ff)$/.test(directiveName)) {
+        context.fail(getErrorResponse(ERROR_TYPES.INVALID_DIRECTIVE, `Unexpected directive name: ${directiveName}`));
     } else {
 
         /**
-         * Retrieve the appliance id and accessToken from the incoming message.
+         * Retrieve the endpointId and accessToken from the incoming message.
          */
-        var applianceId = event.payload.appliance.applianceId,
-            accessToken = event.payload.accessToken.trim(),
+        var endpointId = event.directive.endpoint.endpointId,
+            accessToken = event.directive.endpoint.scope.token,
             postData = JSON.stringify({
-                level: ((event.header.name === 'TurnOnRequest') ? 'on' : 'off')
+                level: (directiveName === 'TurnOn' ? 'on' : 'off')
             });
-        
-        put(`/devices/${applianceId}?access_token=${accessToken}`, postData, getOptions(postData))
+
+        put(`/devices/${endpointId}?access_token=${accessToken}`, postData)
             .then(response => {
                 if (response.statusCode === 200) {
-                    var name = event.header.name === 'TurnOnRequest' ? 'TurnOnConfirmation' : 'TurnOffConfirmation',
-                        confirmation = getResponse(name, 'Alexa.ConnectedHome.Control');
-                    console.log(`Confirmation: ${JSON.stringify(confirmation)}`);
-                    context.succeed(confirmation);
+                    var newState = directiveName === 'TurnOn' ? 'ON' : 'OFF',
+                        powerControlResponse = getPowerControlResponse(newState);
+                    console.log(`PowerControlResponse: ${JSON.stringify(powerControlResponse)}`);
+                    context.succeed(powerControlResponse);
                 } else {
-                    throw new Error(`Unexpected HTTP statusCode ${response.statusCode}`);
+                    context.fail(getErrorResponse(ERROR_TYPES.ENDPOINT_UNREACHABLE, `Unexpected HTTP statusCode ${response.statusCode}`));
                 }
             })
             .catch(error => {
-                console.log(`Error: ${JSON.stringify(error)}`);
-                context.fail(getResponse('DependentServiceUnavailableError', 'Alexa.ContextHome.Control', {
-                    dependentServiceName: 'z-way-relay'
-                }));
+                context.fail(getErrorResponse(ERROR_TYPES.ENDPOINT_UNREACHABLE, `Failed PUT request: ${JSON.stringify(error)}`));
             });
     }
 }
-
+function handleChannelControlEvent(event, context) {
+    context.fail(getErrorResponse(ERROR_TYPES.INTERNAL_ERROR, 'Not yet implemented'));
+}
+function handleInputControlEvent(event, context) {
+    context.fail(getErrorResponse(ERROR_TYPES.INTERNAL_ERROR, 'Not yet implemented'));
+}
+function handleStepSpeakerEvent(event, context) {
+    context.fail(getErrorResponse(ERROR_TYPES.INTERNAL_ERROR, 'Not yet implemented'));
+}
 exports.handler = (event, context) => {
-    console.log(`Event received: ${JSON.stringify(event)}`);
-    switch (event.header.namespace) {
-
-        /**
-         * The namespace of "Discovery" indicates a request is being made to the lambda for
-         * discovering all appliances associated with the customer's appliance cloud account.
-         * can use the accessToken that is made available as part of the payload to determine
-         * the customer.
-         */
-        case 'Alexa.ConnectedHome.Discovery':
-            handleDiscovery(event, context);
-            break;
-
-        /**
-         * The namespace of "Control" indicates a request is being made to us to turn a
-         * given device on, off or brighten. This message comes with the "appliance"
-         * parameter which indicates the appliance that needs to be acted on.
-         */
-        case 'Alexa.ConnectedHome.Control':
-            handleControl(event, context);
-            break;
-
-        /**
-         * We received an unexpected message
-         */
-        default:
-            console.log(`Unsupported namespace: ${event.header.namespace}`);
-            context.fail(getResponse('UnsupportedOperationError', 'Alexa.ConnectedHome.Control'));
-            break;
+    if (isEventValid(event)) {
+        var namespace = event.directive.header.namespace;
+        switch (namespace) {
+            case SUPPORTED_INTERFACES.Alexa_Discovery:
+                handleDiscoveryEvent(event, context);
+                break;
+            case SUPPORTED_INTERFACES.Alexa_PowerController:
+                handlePowerControlEvent(event, context);
+                break;
+            case SUPPORTED_INTERFACES.Alexa_InputController:
+                handleInputControlEvent(event, context);
+                break;
+            case SUPPORTED_INTERFACES.Alexa_ChannelController:
+                handleChannelControlEvent(event, context);
+                break;
+            case SUPPORTED_INTERFACES.Alexa_StepSpeaker:
+                handleStepSpeakerEvent(event, context);
+                break;
+            default:
+                context.fail(getErrorResponse(ERROR_TYPES.INTERNAL_ERROR, `Unsupported namespace: ${namespace}`));
+                break;
+        }
+    } else {
+        context.fail(getErrorResponse(ERROR_TYPES.INTERNAL_ERROR, `Unexpected event received: ${JSON.stringify(event)}`));
     }
 };
