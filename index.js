@@ -6,19 +6,19 @@ var http = require('http'),
     isVerbose = process.env.IS_VERBOSE;
 
 const ERROR_TYPES = {
-        endpointUnreachable: 'ENDPOINT_UNREACHABLE',
-        noSuchEndpoint: 'NO_SUCH_ENDPOINT',
-        invalidValue: 'INVALID_VALUE',
-        valueOutOfRange: 'VALUE_OUT_OF_RANGE',
-        temperatureValueOutOfRange: 'TEMPERATURE_VALUE_OUT_OF_RANGE',
-        invalidDirective: 'INVALID_DIRECTIVE',
-        firmwareOutOfRange: 'FIRMWARE_OUT_OF_RANGE',
-        hardwareMalfunction: 'HARDWARE_MALFUNCTION',
-        rateLimitExceeded: 'RATE_LIMIT_EXCEEDED',
-        invalidAuthorizationCredential: 'INVALID_AUTHORIZATION_CREDENTIAL',
-        expiredAuthorizationCredential: 'EXPIRED_AUTHORIZATION_CREDENTIAL',
-        internalError: 'INTERNAL_ERROR'
-    },
+    endpointUnreachable: 'ENDPOINT_UNREACHABLE',
+    noSuchEndpoint: 'NO_SUCH_ENDPOINT',
+    invalidValue: 'INVALID_VALUE',
+    valueOutOfRange: 'VALUE_OUT_OF_RANGE',
+    temperatureValueOutOfRange: 'TEMPERATURE_VALUE_OUT_OF_RANGE',
+    invalidDirective: 'INVALID_DIRECTIVE',
+    firmwareOutOfRange: 'FIRMWARE_OUT_OF_RANGE',
+    hardwareMalfunction: 'HARDWARE_MALFUNCTION',
+    rateLimitExceeded: 'RATE_LIMIT_EXCEEDED',
+    invalidAuthorizationCredential: 'INVALID_AUTHORIZATION_CREDENTIAL',
+    expiredAuthorizationCredential: 'EXPIRED_AUTHORIZATION_CREDENTIAL',
+    internalError: 'INTERNAL_ERROR'
+},
     SUPPORTED_ENDPOINT_TYPES = {
         switchBinary: 'switchBinary',
         roku: 'roku',
@@ -40,7 +40,17 @@ const ERROR_TYPES = {
         Alexa_PlaybackController: 'Alexa.PlaybackController',
         Alexa_InputController: 'Alexa.InputController',
         Alexa_StepSpeaker: 'Alexa.StepSpeaker'
-    };
+    },
+    SUPPORTED_PLAYBACK_DIRECTIVES = [
+        'FastForward',
+        'Next',
+        'Pause',
+        'Play',
+        'Previous',
+        'Rewind',
+        'StartOver',
+        'Stop'
+    ];
 
 function assign(target) {
     for (var i = 1; i < arguments.length; i++) {
@@ -72,16 +82,22 @@ function httpPromise(options, postData) {
             outRequest.write(postData);
         }
         outRequest.end();
-    });
+    })
+        .then(response => {
+            if (response.statusCode !== 200) {
+                throw new Error(`HTTP ${response.statusCode}`);
+            }
+            return response;
+        });
 }
 
 function get(path) {
-    verbose(`GET ${path}`);
+    verbose('GET', path);
     return httpPromise(assign({ method: 'GET', path: path }, getOptions()));
 }
 
 function put(path, postData) {
-    verbose(`PUT ${path} ${postData}`);
+    verbose('PUT', path, postData);
     return httpPromise(assign({ method: 'PUT', path: path }, getOptions(postData)), postData);
 }
 
@@ -126,7 +142,7 @@ function getErrorResponse(type, message) {
         type: type,
         message: message
     });
-    console.error(`errorResponse: ${ret}`);
+    log('errorResponse:', ret);
     return ret;
 }
 
@@ -157,39 +173,53 @@ function getEndpointCapabilities(endpoint) {
     if (type === SUPPORTED_ENDPOINT_TYPES.television
         || type === SUPPORTED_ENDPOINT_TYPES.roku) {
         ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_ChannelController));
-        ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_PlaybackController));
     }
     if (type === SUPPORTED_ENDPOINT_TYPES.television) {
         ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_StepSpeaker));
         ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_InputController));
     }
+    if (type === SUPPORTED_ENDPOINT_TYPES.roku) {
+        ret.push(getCapability(SUPPORTED_INTERFACES.Alexa_PlaybackController));
+    }
     return ret;
 }
 function getDiscoveryAlexaResponse(alexaEndpoints) {
     var ret = getResponse(SUPPORTED_INTERFACES.Alexa_Discovery, 'Discover.Response', { endpoints: alexaEndpoints });
-    verbose(`discoveryAlexaResponse(${JSON.stringify(ret)})`);
+    verbose('discoveryAlexaResponse:', ret);
     return ret;
 }
 function getPowerControlAlexaResponse(endpointResponse) {
     var power = JSON.parse(endpointResponse.responseText),
         ret = assign({
-        context: {
-            properties: [{
-                namespace: SUPPORTED_INTERFACES.Alexa_PowerController,
-                name: 'powerState',
-                value: power.state,
-                timeOfSample: power.isoTimestamp,
-                uncertaintyInMilliseconds: power.uncertaintyMs
-            }]
-        }
-    }, getResponse('Alexa', 'Response'));
-    verbose(`powerControlAlexaResponse(${JSON.stringify(ret)})`);
+            context: {
+                properties: [{
+                    namespace: SUPPORTED_INTERFACES.Alexa_PowerController,
+                    name: 'powerState',
+                    value: power.state,
+                    timeOfSample: power.isoTimestamp,
+                    uncertaintyInMilliseconds: power.uncertaintyMs
+                }]
+            }
+        }, getResponse('Alexa', 'Response'));
+    verbose('powerControlAlexaResponse:', ret);
     return ret;
+}
+function log() {
+    console.log.apply(console, Array.prototype.map.call(arguments, argument =>
+        typeof argument === 'object' ? JSON.stringify(argument) : argument));
 }
 function verbose() {
     if (isVerbose) {
-        console.info.apply(console, arguments);
+        log.apply(null, arguments);
     }
+}
+
+function getDirectiveName(event) {
+    return event.directive.header.name;
+}
+
+function failInvalidDirective(context, directiveName) {
+    context.fail(getErrorResponse(ERROR_TYPES.invalidDirective, `Unsupported directive: ${directiveName}`));
 }
 /**
  * This function is invoked when we receive a "Discovery" message from Alexa Smart Home Skill.
@@ -216,56 +246,54 @@ function handleDiscoveryEvent(event, context) {
                 };
             })
         )
-        .then(alexaEndpoints => {
-            context.succeed(getDiscoveryAlexaResponse(alexaEndpoints));
-        })
+        .then(alexaEndpoints => context.succeed(getDiscoveryAlexaResponse(alexaEndpoints)))
         .catch(getError => {
-            console.error(`Discovery error: ${JSON.stringify(getError)}`);
+            log('discoveryGetError:', getError);
 
             /* we're never supposed to return an error for a discovery response */
             context.succeed(getDiscoveryAlexaResponse([]));
         });
 }
+
+function getEndpointId(event) {
+    return event.directive.endpoint.endpointId;
+}
+
+function getEndpointToken(event) {
+    return event.directive.endpoint.scope.token;
+}
+
 /**
  * PowerControl events are processed here.
  * This is called when Alexa requests an action (IE turn off appliance).
  */
 function handlePowerControlEvent(event, context) {
-    var directiveName = event.directive.header.name;
+    var directiveName = getDirectiveName(event);
 
     if (!/^TurnO(n|ff)$/.test(directiveName)) {
-        context.fail(getErrorResponse(ERROR_TYPES.invalidDirective, `Unsupported directive name: ${directiveName}`));
+        failInvalidDirective(context, directiveName);
     } else {
 
         /**
          * Retrieve the endpointId and accessToken from the incoming message.
          */
-        var endpointId = event.directive.endpoint.endpointId,
-            accessToken = event.directive.endpoint.scope.token,
+        var endpointId = getEndpointId(event),
+            accessToken = getEndpointToken(event),
             postData = JSON.stringify({
                 state: directiveName === 'TurnOn' ? 'on' : 'off'
             });
 
         put(`/endpoints/${endpointId}/power?access_token=${accessToken}`, postData)
-            .then(endpointResponse => {
-                if (endpointResponse.statusCode === 200) {
-                    context.succeed(getPowerControlAlexaResponse(endpointResponse));
-                } else {
-                    context.fail(getHttpStatusErrorResponse(endpointResponse));
-                }
-            })
+            .then(endpointResponse => context.succeed(getPowerControlAlexaResponse(endpointResponse)))
             .catch(putError => context.fail(getPutErrorResponse(putError)));
     }
-}
-function getHttpStatusErrorResponse(response) {
-    return getErrorResponse(ERROR_TYPES.internalError, `Unexpected HTTP statusCode: ${response.statusCode}`);
 }
 function getPutErrorResponse(error) {
     return getErrorResponse(ERROR_TYPES.endpointUnreachable, `Failed PUT request: ${JSON.stringify(error)}`);
 }
-function getAlexaChannelResponse(endpointResponse) {
+function getChannelAlexaResponse(endpointResponse) {
     var channel = JSON.parse(endpointResponse.responseText);
-    return assign({
+    var ret = assign({
         context: {
             properties: [{
                 namespace: 'Alexa.ChannelController',
@@ -276,42 +304,53 @@ function getAlexaChannelResponse(endpointResponse) {
             }]
         }
     }, getResponse('Alexa', 'Response'));
+    verbose('channelAlexaResponse:', ret);
+    return ret;
+}
+function getInputAlexaResponse(endpointResponse) {
+    var input = JSON.parse(endpointResponse.responseText);
+    var ret = assign({
+        context: {
+            properties: [{
+                namespace: 'Alexa.InputController',
+                name: 'input',
+                value: input.name,
+                timeOfSample: input.isoTimestamp,
+                uncertaintyInMilliseconds: input.uncertaintyMs
+            }]
+        }
+    }, getResponse('Alexa', 'Response'));
+    verbose('inputAlexaResponse:', ret);
+    return ret;
+}
+function getStepSpeakerAlexaResponse(endpointResponse) {
+    var ret = getResponse('Alexa', 'Response');
+    verbose('stepSpeakerAlexaResponse:', ret);
+    return ret;
 }
 function handleChangeChannelEvent(event, context) {
-    var endpointId = event.directive.endpoint.endpointId,
-        accessToken = event.directive.endpoint.scope.token,
+    var endpointId = getEndpointId(event),
+        accessToken = getEndpointToken(event),
 
         /* combine the alexaChannel with the alexaChannelMetadata */
         postData = JSON.stringify(assign({
             metadata: event.directive.payload.channelMetadata
         }, event.directive.payload.channel));
     put(`/endpoints/${endpointId}/channel?access_token=${accessToken}`, postData)
-        .then(endpointResponse => {
-            if (endpointResponse.statusCode === 200) {
-                context.success(getAlexaChannelResponse(endpointResponse));
-            } else {
-                context.fail(getHttpStatusErrorResponse(endpointResponse));
-            }
-        })
+        .then(endpointResponse => context.success(getChannelAlexaResponse(endpointResponse)))
         .catch(putError => context.fail(getPutErrorResponse(putError)));
 }
 function handleSkipChannelsEvent(event, context) {
-    var endpointId = event.directive.endpoint.endpointId,
+    var endpointId = getEndpointId(event),
         postData = JSON.stringify({
             channelCount: event.directive.payload.channelCount
         });
-    put(`/devices/${endpointId}/channel`, postData)
-        .then(endpointResponse => {
-            if (endpointResponse.statusCode === 200) {
-                context.success(getAlexaChannelResponse(endpointResponse));
-            } else {
-                context.fail(getHttpStatusErrorResponse(endpointResponse));
-            }
-        })
+    put(`/endpoints/${endpointId}/channel`, postData)
+        .then(endpointResponse => context.success(getChannelAlexaResponse(endpointResponse)))
         .catch(putError => context.fail(getPutErrorResponse(putError)));
 }
 function handleChannelControlEvent(event, context) {
-    var directiveName = event.directive.header.name;
+    var directiveName = getDirectiveName(event);
     switch (directiveName) {
         case 'ChangeChannel':
             handleChangeChannelEvent(event, context);
@@ -320,18 +359,69 @@ function handleChannelControlEvent(event, context) {
             handleSkipChannelsEvent(event, context);
             break;
         default:
-            context.fail(getErrorResponse(ERROR_TYPES.invalidDirective, `Unexpected directiveName: ${directiveName}`));
+            failInvalidDirective(context, directiveName);
             break;
     }
 }
 function handleInputControlEvent(event, context) {
-    context.fail(getErrorResponse(ERROR_TYPES.internalError, 'Not yet implemented'));
+    var directiveName = getDirectiveName(event),
+        endpointId = getEndpointId(event),
+        accessToken = getEndpointToken(event),
+        postData = JSON.stringify({ name: event.directive.payload.input });
+    switch (directiveName) {
+        case 'SelectInput':
+            put(`/endpoints/${endpointId}/input?access_token=${accessToken}`, postData)
+                .then(endpointResponse => context.success(getInputAlexaResponse(endpointResponse)))
+                .catch(putError => context.fail(getPutErrorResponse(putError)));
+            break;
+        default:
+            failInvalidDirective(context, directiveName);
+            break;
+    }
 }
 function handleStepSpeakerEvent(event, context) {
-    context.fail(getErrorResponse(ERROR_TYPES.internalError, 'Not yet implemented'));
+    var directiveName = getDirectiveName(event),
+        endpointId = getEndpointId(event),
+        accessToken = getEndpointToken(event),
+        postData;
+    switch (directiveName) {
+        case 'SetMute':
+            postData = JSON.stringify({ mute: event.directive.payload.mute });
+            break;
+        case 'AdjustVolume':
+            postData = JSON.stringify({ volumeSteps: event.directive.payload.volumeSteps });
+            break;
+        default:
+            failInvalidDirective(context, directiveName);
+            return;
+    }
+    put(`/endpoints/${endpointId}/volume?accessToken=${accessToken}`, postData)
+        .then(endpointResponse => context.success(getStepSpeakerAlexaResponse(endpointResponse)))
+        .catch(putError => context.fail(getPutErrorResponse(putError)));
+}
+function isPlaybackDirectiveValid(directiveName) {
+    return SUPPORTED_PLAYBACK_DIRECTIVES.indexOf(directiveName) !== -1;
+}
+function getPlaybackControlAlexaResponse(endpointResponse) {
+    var ret = getResponse('Alexa', 'Response');
+    verbose('playbackControlAlexaResponse:', ret);
+    return ret;
+}
+function handlePlaybackControlEvent(event, context) {
+    var directiveName = getDirectiveName(event),
+        endpointId = getEndpointId(event),
+        accessToken = getEndpointToken(event);
+    if (isPlaybackDirectiveValid(directiveName)) {
+        var postData = JSON.stringify({ directive: directiveName });
+        put(`/endpoints/${endpointId}/playback?accessToken=${accessToken}`, postData)
+            .then(endpointResponse => context.success(getPlaybackControlAlexaResponse(endpointResponse)))
+            .catch(putError => context.fail(getPutErrorResponse(putError)));
+    } else {
+        failInvalidDirective(context, directiveName);
+    }
 }
 exports.handler = (event, context) => {
-    verbose(`event(${JSON.stringify(event)})`, `context(${JSON.stringify(context)})`);
+    verbose('event:', event, 'context:', context);
     if (isEventValid(event)) {
         var namespace = event.directive.header.namespace;
         switch (namespace) {
@@ -349,6 +439,9 @@ exports.handler = (event, context) => {
                 break;
             case SUPPORTED_INTERFACES.Alexa_StepSpeaker:
                 handleStepSpeakerEvent(event, context);
+                break;
+            case SUPPORTED_INTERFACES.Alexa_PlaybackController:
+                handlePlaybackControlEvent(event, context);
                 break;
             default:
                 context.fail(getErrorResponse(ERROR_TYPES.internalError, `Unsupported namespace: ${namespace}`));
