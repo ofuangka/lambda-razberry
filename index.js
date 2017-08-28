@@ -293,18 +293,23 @@ function getPutErrorResponse(error) {
 }
 function getChannelAlexaResponse(endpointResponse) {
     var channel = JSON.parse(endpointResponse.responseText);
+    log('channel:', channel);
     var ret = assign({
         context: {
             properties: [{
                 namespace: 'Alexa.ChannelController',
                 name: 'channel',
-                value: channel.channel,
+                value: {
+                    number: channel.value.number,
+                    callSign: channel.value.callSign,
+                    affiliateCallSign: channel.value.affiliateCallSign
+                },
                 timeOfSample: channel.isoTimestamp,
                 uncertaintyInMilliseconds: channel.uncertaintyMs
             }]
         }
     }, getResponse('Alexa', 'Response'));
-    verbose('channelAlexaResponse:', ret);
+    log('channelAlexaResponse:', ret);
     return ret;
 }
 function getInputAlexaResponse(endpointResponse) {
@@ -337,7 +342,7 @@ function handleChangeChannelEvent(event, context) {
             metadata: event.directive.payload.channelMetadata
         }, event.directive.payload.channel));
     put(`/endpoints/${endpointId}/channel?access_token=${accessToken}`, postData)
-        .then(endpointResponse => context.success(getChannelAlexaResponse(endpointResponse)))
+        .then(endpointResponse => context.succeed(getChannelAlexaResponse(endpointResponse)))
         .catch(putError => context.fail(getPutErrorResponse(putError)));
 }
 function handleSkipChannelsEvent(event, context) {
@@ -346,7 +351,7 @@ function handleSkipChannelsEvent(event, context) {
             channelCount: event.directive.payload.channelCount
         });
     put(`/endpoints/${endpointId}/channel`, postData)
-        .then(endpointResponse => context.success(getChannelAlexaResponse(endpointResponse)))
+        .then(endpointResponse => context.succeed(getChannelAlexaResponse(endpointResponse)))
         .catch(putError => context.fail(getPutErrorResponse(putError)));
 }
 function handleChannelControlEvent(event, context) {
@@ -371,7 +376,7 @@ function handleInputControlEvent(event, context) {
     switch (directiveName) {
         case 'SelectInput':
             put(`/endpoints/${endpointId}/input?access_token=${accessToken}`, postData)
-                .then(endpointResponse => context.success(getInputAlexaResponse(endpointResponse)))
+                .then(endpointResponse => context.succeed(getInputAlexaResponse(endpointResponse)))
                 .catch(putError => context.fail(getPutErrorResponse(putError)));
             break;
         default:
@@ -396,14 +401,14 @@ function handleStepSpeakerEvent(event, context) {
             return;
     }
     put(`/endpoints/${endpointId}/volume?accessToken=${accessToken}`, postData)
-        .then(endpointResponse => context.success(getStepSpeakerAlexaResponse(endpointResponse)))
+        .then(endpointResponse => context.succeed(getStepSpeakerAlexaResponse(endpointResponse)))
         .catch(putError => context.fail(getPutErrorResponse(putError)));
 }
 function isPlaybackDirectiveValid(directiveName) {
     return SUPPORTED_PLAYBACK_DIRECTIVES.indexOf(directiveName) !== -1;
 }
 function getPlaybackControlAlexaResponse(endpointResponse) {
-    var ret = getResponse('Alexa', 'Response');
+    var ret = assign({ context: { properties: [] } }, getResponse('Alexa', 'Response'));
     verbose('playbackControlAlexaResponse:', ret);
     return ret;
 }
@@ -414,7 +419,7 @@ function handlePlaybackControlEvent(event, context) {
     if (isPlaybackDirectiveValid(directiveName)) {
         var postData = JSON.stringify({ directive: directiveName });
         put(`/endpoints/${endpointId}/playback?accessToken=${accessToken}`, postData)
-            .then(endpointResponse => context.success(getPlaybackControlAlexaResponse(endpointResponse)))
+            .then(endpointResponse => context.succeed(getPlaybackControlAlexaResponse(endpointResponse)))
             .catch(putError => context.fail(getPutErrorResponse(putError)));
     } else {
         failInvalidDirective(context, directiveName);
