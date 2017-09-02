@@ -237,7 +237,7 @@ function handleDiscoveryEvent(event, context) {
             .filter(isEndpointSupported)
             .map(endpoint => {
                 return {
-                    endpointId: endpoint.id,
+                    endpointId: endpoint.id.replace('.', '#'),
                     manufacturerName: endpoint.manufacturer,
                     friendlyName: endpoint.name,
                     description: endpoint.description,
@@ -256,7 +256,7 @@ function handleDiscoveryEvent(event, context) {
 }
 
 function getEndpointId(event) {
-    return event.directive.endpoint.endpointId;
+    return event.directive.endpoint.endpointId.replace('#', '.');
 }
 
 function getEndpointToken(event) {
