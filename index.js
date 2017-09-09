@@ -1,6 +1,6 @@
 'use strict';
 
-var http = require('http'),
+var http = require('https'),
     remoteHost = process.env.REMOTE_HOST,
     remotePort = process.env.REMOTE_PORT,
     isVerbose = process.env.IS_VERBOSE;
